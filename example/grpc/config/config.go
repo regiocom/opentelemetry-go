@@ -15,25 +15,45 @@
 package config
 
 import (
-	"log"
-
-	"go.opentelemetry.io/otel/api/global"
-	"go.opentelemetry.io/otel/exporters/trace/stdout"
+	"go.opentelemetry.io/otel/api/core"
+	"go.opentelemetry.io/otel/api/key"
+	"go.opentelemetry.io/otel/exporters/trace/jaeger"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 // Init configures an OpenTelemetry exporter and trace provider
-func Init() {
-	exporter, err := stdout.NewExporter(stdout.Options{PrettyPrint: true})
-	if err != nil {
-		log.Fatal(err)
-	}
-	tp, err := sdktrace.NewProvider(
-		sdktrace.WithConfig(sdktrace.Config{DefaultSampler: sdktrace.AlwaysSample()}),
-		sdktrace.WithSyncer(exporter),
+func Init() func() {
+	//exporter, err := stdout.NewExporter(stdout.Options{PrettyPrint: true})
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
+	//tp, err := sdktrace.NewProvider(
+	//	sdktrace.WithConfig(sdktrace.Config{DefaultSampler: sdktrace.AlwaysSample()}),
+	//	sdktrace.WithSyncer(exporter),
+	//)
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
+	//global.SetTraceProvider(tp)
+
+	// Create and install Jaeger export pipeline
+	_, flush, err := jaeger.NewExportPipeline(
+		jaeger.WithCollectorEndpoint("http://localhost:14268/api/traces"),
+		jaeger.WithProcess(jaeger.Process{
+			ServiceName: "my-grpc-example",
+			Tags: []core.KeyValue{
+				key.String("exporter", "jaeger"),
+				key.Float64("float", 312.23),
+			},
+		}),
+		jaeger.RegisterAsGlobal(),
+		jaeger.WithSDK(&sdktrace.Config{DefaultSampler: sdktrace.AlwaysSample()}),
 	)
+
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
-	global.SetTraceProvider(tp)
+
+	return flush
+
 }

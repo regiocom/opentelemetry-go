@@ -30,10 +30,15 @@ import (
 )
 
 func main() {
-	config.Init()
+	flush := config.Init()
+	defer flush()
 
 	var conn *grpc.ClientConn
-	conn, err := grpc.Dial(":7777", grpc.WithInsecure(), grpc.WithUnaryInterceptor(grpctrace.UnaryClientInterceptor(global.Tracer(""))))
+	conn, err := grpc.Dial(":7777", grpc.WithInsecure(),
+		grpc.WithUnaryInterceptor(grpctrace.UnaryClientInterceptor(global.Tracer(""))),
+		grpc.WithStreamInterceptor(grpctrace.StreamClientInterceptor(global.Tracer(""))),
+	)
+
 	if err != nil {
 		log.Fatalf("did not connect: %s", err)
 	}
@@ -41,10 +46,10 @@ func main() {
 
 	c := api.NewHelloServiceClient(conn)
 
-	CallSayHello(c)
+	//CallSayHello(c)
 	CallSayHelloClientStream(c)
-	CallSayHelloServerStream(c)
-	CallSayHelloBidiStream(c)
+	//CallSayHelloServerStream(c)
+	//CallSayHelloBidiStream(c)
 }
 
 func CallSayHello(c api.HelloServiceClient) {

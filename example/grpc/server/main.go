@@ -59,6 +59,8 @@ func (s *server) SayHelloServerStream(in *api.HelloRequest, out api.HelloService
 func (s *server) SayHelloClientStream(stream api.HelloService_SayHelloClientStreamServer) error {
 	i := 0
 
+	return fmt.Errorf("FAILED")
+
 	for {
 		in, err := stream.Recv()
 
@@ -99,14 +101,18 @@ func (s *server) SayHelloBidiStream(stream api.HelloService_SayHelloBidiStreamSe
 }
 
 func main() {
-	config.Init()
+	flush := config.Init()
+	defer flush()
 
 	lis, err := net.Listen("tcp", port)
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	s := grpc.NewServer(grpc.UnaryInterceptor(grpctrace.UnaryServerInterceptor(global.Tracer(""))))
+	s := grpc.NewServer(
+		grpc.UnaryInterceptor(grpctrace.UnaryServerInterceptor(global.Tracer(""))),
+		grpc.StreamInterceptor(grpctrace.StreamServerInterceptor(global.Tracer(""))),
+	)
 
 	api.RegisterHelloServiceServer(s, &server{})
 	if err := s.Serve(lis); err != nil {

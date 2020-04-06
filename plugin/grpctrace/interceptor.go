@@ -67,6 +67,108 @@ func UnaryClientInterceptor(tracer trace.Tracer) grpc.UnaryClientInterceptor {
 	}
 }
 
+// clientStream  wraps around the embedded grpc.ClientStream, and intercepts the RecvMsg and
+// SendMsg method call.
+type clientStream struct {
+	grpc.ClientStream
+
+	//finished chan error
+	//
+	//clientClosed    chan struct{}
+	//receiveFinished chan struct{}
+}
+
+func (w *clientStream) RecvMsg(m interface{}) error {
+	err := w.ClientStream.RecvMsg(m)
+
+	//if err == io.EOF {
+	//	w.receiveFinished <- struct{}{}
+	//} else if err != nil {
+	//	w.finished <- err
+	//}
+
+	return err
+}
+
+func (w *clientStream) SendMsg(m interface{}) error {
+	return w.ClientStream.SendMsg(m)
+}
+
+func (w *clientStream) CloseSend() error {
+	err := w.ClientStream.CloseSend()
+	//
+	//if err != nil {
+	//	w.finished <- err
+	//} else {
+	//	w.clientClosed <- struct{}{}
+	//}
+
+	return err
+}
+
+func wrapClientStream(s grpc.ClientStream, desc *grpc.StreamDesc) *clientStream {
+	//clientClosed := make(chan struct{})
+	//receiveFinished := make(chan struct{})
+	//
+	//finished := make(chan error)
+	//
+	//go func() {
+	//	if desc.ServerStreams {
+	//		<-receiveFinished
+	//	}
+	//
+	//	<-clientClosed
+	//
+	//	finished <- nil
+	//}()
+
+	return &clientStream{
+		ClientStream:    s,
+		//finished:        finished,
+		//clientClosed:    clientClosed,
+		//receiveFinished: receiveFinished,
+	}
+}
+
+// streamInterceptor is an example stream interceptor.
+func StreamClientInterceptor(tracer trace.Tracer) grpc.StreamClientInterceptor {
+	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		requestMetadata, _ := metadata.FromOutgoingContext(ctx)
+		metadataCopy := requestMetadata.Copy()
+
+		var span trace.Span
+		ctx, span = tracer.Start(
+			ctx, method,
+			trace.WithSpanKind(trace.SpanKindClient),
+			trace.WithAttributes(peerInfoFromTarget(cc.Target())...),
+			trace.WithAttributes(rpcServiceKey.String(serviceFromFullMethod(method))),
+		)
+
+		Inject(ctx, &metadataCopy)
+		ctx = metadata.NewOutgoingContext(ctx, metadataCopy)
+
+		s, err := streamer(ctx, desc, cc, method, opts...)
+		stream := wrapClientStream(s, desc)
+
+		go func() {
+			if err == nil {
+				<- s.Context().Done()
+				err = s.Context().Err()
+				
+			}
+
+			if err != nil {
+				s, _ := status.FromError(err)
+				span.SetStatus(s.Code(), s.Message())
+			}
+
+			span.End()
+		}()
+
+		return stream, err
+	}
+}
+
 func UnaryServerInterceptor(tracer trace.Tracer) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		requestMetadata, _ := metadata.FromIncomingContext(ctx)
@@ -94,6 +196,52 @@ func UnaryServerInterceptor(tracer trace.Tracer) grpc.UnaryServerInterceptor {
 		}
 
 		return resp, err
+	}
+}
+
+// clientStream wraps around the embedded grpc.ServerStream, and intercepts the RecvMsg and
+// SendMsg method call.
+type serverStream struct {
+	grpc.ServerStream
+}
+
+func (w *serverStream) RecvMsg(m interface{}) error {
+	return w.ServerStream.RecvMsg(m)
+}
+
+func (w *serverStream) SendMsg(m interface{}) error {
+	return w.ServerStream.SendMsg(m)
+}
+
+func StreamServerInterceptor(tracer trace.Tracer) grpc.StreamServerInterceptor {
+	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		ctx := ss.Context()
+
+		requestMetadata, _ := metadata.FromIncomingContext(ctx)
+		metadataCopy := requestMetadata.Copy()
+
+		entries, spanCtx := Extract(ctx, &metadataCopy)
+		ctx = correlation.ContextWithMap(ctx, correlation.NewMap(correlation.MapUpdate{
+			MultiKV: entries,
+		}))
+
+		ctx, span := tracer.Start(
+			trace.ContextWithRemoteSpanContext(ctx, spanCtx),
+			info.FullMethod,
+			trace.WithSpanKind(trace.SpanKindServer),
+			trace.WithAttributes(peerInfoFromContext(ctx)...),
+			trace.WithAttributes(rpcServiceKey.String(serviceFromFullMethod(info.FullMethod))),
+		)
+		defer span.End()
+
+		err := handler(srv, &serverStream{ss})
+
+		if err != nil {
+			s, _ := status.FromError(err)
+			span.SetStatus(s.Code(), s.Message())
+		}
+
+		return err
 	}
 }
 
