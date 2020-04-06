@@ -47,9 +47,9 @@ func main() {
 	c := api.NewHelloServiceClient(conn)
 
 	//CallSayHello(c)
-	CallSayHelloClientStream(c)
+	//CallSayHelloClientStream(c)
 	//CallSayHelloServerStream(c)
-	//CallSayHelloBidiStream(c)
+	CallSayHelloBidiStream(c)
 }
 
 func CallSayHello(c api.HelloServiceClient) {

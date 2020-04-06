@@ -59,8 +59,6 @@ func (s *server) SayHelloServerStream(in *api.HelloRequest, out api.HelloService
 func (s *server) SayHelloClientStream(stream api.HelloService_SayHelloClientStreamServer) error {
 	i := 0
 
-	return fmt.Errorf("FAILED")
-
 	for {
 		in, err := stream.Recv()
 

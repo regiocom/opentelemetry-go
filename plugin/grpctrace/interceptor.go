@@ -18,13 +18,13 @@ package grpctrace
 // https://github.com/open-telemetry/opentelemetry-specification/blob/master/specification/data-rpc.md
 import (
 	"context"
-	"net"
-	"regexp"
-
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+	"io"
+	"net"
+	"regexp"
 
 	"go.opentelemetry.io/otel/api/core"
 	"go.opentelemetry.io/otel/api/correlation"
@@ -72,61 +72,87 @@ func UnaryClientInterceptor(tracer trace.Tracer) grpc.UnaryClientInterceptor {
 type clientStream struct {
 	grpc.ClientStream
 
-	//finished chan error
-	//
-	//clientClosed    chan struct{}
-	//receiveFinished chan struct{}
+	finished chan error
+
+	clientClosed chan struct{}
+	receivedFinished chan struct{}
+	errored chan error
+	desc *grpc.StreamDesc
 }
 
 func (w *clientStream) RecvMsg(m interface{}) error {
 	err := w.ClientStream.RecvMsg(m)
 
-	//if err == io.EOF {
-	//	w.receiveFinished <- struct{}{}
-	//} else if err != nil {
-	//	w.finished <- err
-	//}
+	if err == nil && !w.desc.ServerStreams {
+		close(w.receivedFinished)
+	} else if err == io.EOF {
+		close(w.receivedFinished)
+	} else if err != nil{
+		w.errored <- err
+	}
 
 	return err
 }
 
 func (w *clientStream) SendMsg(m interface{}) error {
-	return w.ClientStream.SendMsg(m)
+	err := w.ClientStream.SendMsg(m)
+
+	if err != nil {
+		w.errored <- err
+	}
+
+	return err
 }
 
 func (w *clientStream) CloseSend() error {
 	err := w.ClientStream.CloseSend()
-	//
-	//if err != nil {
-	//	w.finished <- err
-	//} else {
-	//	w.clientClosed <- struct{}{}
-	//}
+	if err != nil {
+		w.errored <- err
+	} else {
+		w.clientClosed <- struct{}{}
+	}
 
 	return err
 }
 
 func wrapClientStream(s grpc.ClientStream, desc *grpc.StreamDesc) *clientStream {
-	//clientClosed := make(chan struct{})
-	//receiveFinished := make(chan struct{})
-	//
-	//finished := make(chan error)
-	//
-	//go func() {
-	//	if desc.ServerStreams {
-	//		<-receiveFinished
-	//	}
-	//
-	//	<-clientClosed
-	//
-	//	finished <- nil
-	//}()
+	clientClosed := make(chan struct{})
+	receivedFinished := make(chan struct{})
+	errored := make(chan error)
+
+	finished := make(chan error)
+
+	go func() {
+		var err error
+	
+		select {
+			case err = <- errored :
+			case <- clientClosed :
+			case <- receivedFinished :
+		}
+
+		if err != nil{
+			finished <- err
+			return
+		}
+
+		select {
+			case err = <- errored :
+				finished <- err
+			case <- clientClosed :
+				finished <- nil
+			case <- receivedFinished :
+				finished <- nil
+		}
+	}()
 
 	return &clientStream{
-		ClientStream:    s,
-		//finished:        finished,
-		//clientClosed:    clientClosed,
-		//receiveFinished: receiveFinished,
+		ClientStream:     s,
+		clientClosed:     clientClosed,
+		receivedFinished: receivedFinished,
+		errored:          errored,
+		desc:             desc,
+		finished: finished,
 	}
 }
 
@@ -152,9 +178,7 @@ func StreamClientInterceptor(tracer trace.Tracer) grpc.StreamClientInterceptor {
 
 		go func() {
 			if err == nil {
-				<- s.Context().Done()
-				err = s.Context().Err()
-				
+				err = <- stream.finished
 			}
 
 			if err != nil {
